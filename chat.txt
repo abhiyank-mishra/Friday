@@ -1,0 +1,4 @@
+You: hello friday
+Jarvis: I'm Friday and I'm ready to roll.
+You: hello friday what can what do you do
+Jarvis: Hello Sir, What can I do for you...?
