@@ -26,5 +26,5 @@
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/friday.git
+   git clone https://github.com/abhiyank-mishra/friday.git
    cd friday
