@@ -5,3 +5,4 @@ pywhatkit
 wikipedia
 requests
 python-dotenv
+PyAudio

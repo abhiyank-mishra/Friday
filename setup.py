@@ -161,13 +161,14 @@ def check_integrity():
 # ╚══════════════════════════════════════════════════════════════╝
 
 def install_dependencies():
-    """Install all required Python packages from requirements.txt."""
+    """Install all required Python packages, with special PyAudio handling."""
     print_step(1, "Installing Dependencies")
 
     if not os.path.exists(REQ_FILE):
         print_fail(f"requirements.txt not found at: {REQ_FILE}")
         return False
 
+    # Install everything except PyAudio first (PyAudio needs special handling)
     try:
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "-r", REQ_FILE, "--quiet"],
@@ -175,18 +176,84 @@ def install_dependencies():
             stderr=subprocess.PIPE,
         )
         print_ok("All dependencies installed successfully.")
+    except subprocess.CalledProcessError:
+        print_warn("Some packages had issues. Trying individually...")
+        with open(REQ_FILE, "r") as f:
+            packages = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        for pkg in packages:
+            if pkg.lower() == "pyaudio":
+                continue  # Handle separately below
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", pkg, "--quiet"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                )
+                print_ok(f"{pkg}")
+            except subprocess.CalledProcessError:
+                print_fail(f"{pkg} — failed!")
+
+    # ── Special PyAudio Installation ──
+    # PyAudio often fails on Windows because it needs C++ build tools.
+    # We try multiple methods to get it installed.
+    print()
+    print("      Installing PyAudio (voice input driver)...")
+    if _install_pyaudio():
+        print_ok("PyAudio installed successfully.")
+    else:
+        print_fail("PyAudio installation failed!")
+        print_warn("Voice input may not work without PyAudio.")
+        print_warn("Manual fix options:")
+        print_warn("  1. pip install pipwin && pipwin install pyaudio")
+        print_warn("  2. Download .whl from: https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio")
+        print_warn("  3. Install Visual C++ Build Tools, then: pip install PyAudio")
+
+    return True
+
+
+def _install_pyaudio():
+    """Try multiple methods to install PyAudio on Windows."""
+    # Check if already installed
+    try:
+        import pyaudio
+        return True
+    except ImportError:
+        pass
+
+    # Method 1: Standard pip install
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "PyAudio", "--quiet"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
         return True
     except subprocess.CalledProcessError:
-        print_warn("Some packages failed. Retrying with verbose output...")
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "-r", REQ_FILE]
-            )
-            print_ok("Dependencies installed on retry.")
-            return True
-        except subprocess.CalledProcessError as e:
-            print_fail(f"Failed to install dependencies: {e}")
-            return False
+        pass
+
+    # Method 2: Try pipwin (Windows binary installer)
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "pipwin", "--quiet"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        subprocess.check_call(
+            [sys.executable, "-m", "pipwin", "install", "pyaudio"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # Method 3: Try with --only-binary flag
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "PyAudio", "--only-binary=:all:"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        pass
+
+    return False
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -282,6 +349,7 @@ def verify_imports():
         "wikipedia": "wikipedia",
         "requests": "requests",
         "dotenv": "python-dotenv",
+        "pyaudio": "PyAudio (voice input)",
     }
 
     all_ok = True
@@ -290,51 +358,97 @@ def verify_imports():
             __import__(module)
             print_ok(f"{package}")
         except ImportError:
-            print_fail(f"{package} — not installed!")
+            if module == "pyaudio":
+                print_fail(f"{package} — CRITICAL for voice input!")
+                print_warn("      Run setup.py again or install manually.")
+            else:
+                print_fail(f"{package} — not installed!")
             all_ok = False
 
     return all_ok
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  STEP 4: MICROPHONE TEST                                    ║
+# ║  STEP 4: MICROPHONE DIAGNOSTICS                              ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 def test_microphone():
-    """Test if microphone is available and working."""
-    print_step(4, "Testing Microphone")
+    """Full microphone diagnostics — test every available device."""
+    print_step(4, "Microphone Diagnostics")
+
+    # Check PyAudio first (required for microphone)
+    try:
+        import pyaudio
+        print_ok(f"PyAudio v{pyaudio.__version__} loaded.")
+    except ImportError:
+        print_fail("PyAudio is NOT installed — microphone will NOT work!")
+        print_warn("Run this setup again or install manually:")
+        print_warn("  pip install pipwin && pipwin install pyaudio")
+        return False
 
     try:
         import speech_recognition as sr
         r = sr.Recognizer()
-        mics = sr.Microphone.list_microphone_names()
-
-        if not mics:
-            print_warn("No microphone detected!")
-            print_warn("Friday will use TEXT INPUT mode as fallback.")
-            return False
-
-        print_ok(f"Found {len(mics)} microphone(s):")
-        for i, mic in enumerate(mics[:3]):
-            print_ok(f"  [{i}] {mic}")
-        if len(mics) > 3:
-            print_ok(f"  ... and {len(mics) - 3} more")
-
-        # Quick audio capture test
-        try:
-            with sr.Microphone() as source:
-                r.adjust_for_ambient_noise(source, duration=0.5)
-            print_ok("Microphone is working!")
-            return True
-        except OSError:
-            print_warn("Microphone detected but not accessible.")
-            print_warn("Friday will use TEXT INPUT mode as fallback.")
-            return False
-
-    except Exception as e:
-        print_warn(f"Microphone test failed: {e}")
-        print_warn("Friday will use TEXT INPUT mode as fallback.")
+    except ImportError:
+        print_fail("SpeechRecognition not installed!")
         return False
+
+    # List all audio devices
+    try:
+        mics = sr.Microphone.list_microphone_names()
+    except (OSError, AttributeError) as e:
+        print_fail(f"Cannot list audio devices: {e}")
+        print_warn("Check if your audio drivers are installed.")
+        return False
+
+    if not mics:
+        print_fail("No audio input devices found!")
+        print_warn("Make sure a microphone is connected.")
+        return False
+
+    print_ok(f"Found {len(mics)} audio device(s):")
+    for i, mic in enumerate(mics):
+        print(f"        [{i}] {mic}")
+
+    # Try default mic first
+    print()
+    print("      Testing microphones...")
+    working_mic = None
+
+    try:
+        with sr.Microphone() as source:
+            r.adjust_for_ambient_noise(source, duration=0.5)
+        print_ok("Default microphone is working!")
+        working_mic = "default"
+    except (OSError, AttributeError):
+        print_warn("Default mic failed. Trying each device...")
+        for i, name in enumerate(mics):
+            try:
+                with sr.Microphone(device_index=i) as source:
+                    r.adjust_for_ambient_noise(source, duration=0.3)
+                print_ok(f"Working mic found: [{i}] {name}")
+                working_mic = i
+                break
+            except (OSError, AttributeError):
+                continue
+
+    if working_mic is None:
+        print_fail("No working microphone found!")
+        print()
+        print("      ┌────────────────────────────────────────────────┐")
+        print("      │  HOW TO FIX MICROPHONE ISSUES:                │")
+        print("      │                                                │")
+        print("      │  1. Plug in a microphone or headset with mic  │")
+        print("      │  2. Windows Settings → Privacy → Microphone   │")
+        print("      │     → Allow apps to access your microphone    │")
+        print("      │  3. Right-click 🔊 speaker → Sound Settings   │")
+        print("      │     → Input → Select correct mic device       │")
+        print("      │  4. Update audio drivers from Device Manager   │")
+        print("      └────────────────────────────────────────────────┘")
+        return False
+
+    print_ok("Voice input is ready!")
+    return True
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -351,19 +465,23 @@ def show_summary(integrity_ok, deps_ok, key_ok, imports_ok, mic_ok):
     print(f"  ║  Dependencies: {'✅ Installed' if deps_ok else '❌ Failed':>30s}   ║")
     print(f"  ║  API Key:      {'✅ Configured' if key_ok else '⚠️  Not set (offline)':>30s}   ║")
     print(f"  ║  Imports:      {'✅ All passed' if imports_ok else '❌ Some failed':>30s}   ║")
-    print(f"  ║  Microphone:   {'✅ Working (voice mode)' if mic_ok else '⚠️  Unavailable (text mode)':>30s}   ║")
+    print(f"  ║  Microphone:   {'✅ Working' if mic_ok else '❌ Not working':>30s}   ║")
     print("  ╠══════════════════════════════════════════════════════╣")
 
-    if integrity_ok and deps_ok and imports_ok:
-        mode = "Voice + Text" if mic_ok else "Text Only"
+    if integrity_ok and deps_ok and imports_ok and mic_ok:
         print("  ║                                                      ║")
-        print(f"  ║   🚀 Ready! Run: python main.py                      ║")
-        print(f"  ║   📢 Input mode: {mode:<35s}  ║")
+        print("  ║   🚀 All good! Run: python main.py                   ║")
+        print("  ║   🎙️  Voice input ready                               ║")
         print("  ║                                                      ║")
     elif not integrity_ok:
         print("  ║                                                      ║")
         print("  ║   ⛔ AI is DISABLED due to identity tampering.       ║")
         print("  ║   Run 'python setup.py' again and type 'sorry'.      ║")
+        print("  ║                                                      ║")
+    elif not mic_ok:
+        print("  ║                                                      ║")
+        print("  ║   ⚠️  Microphone not working! Fix it and run setup   ║")
+        print("  ║   again. See the diagnostics above for help.         ║")
         print("  ║                                                      ║")
     else:
         print("  ║                                                      ║")

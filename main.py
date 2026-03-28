@@ -1,6 +1,7 @@
 import os
 import platform
 import random
+import time
 import data
 import pyautogui
 from command import Command, print_ai
@@ -8,29 +9,13 @@ from speak import speak
 
 pyautogui.FAILSAFE = False
 
-# ── Input Mode Detection ──────────────────────────────────────
-# Try to detect if microphone/voice input is available.
-# If not, fall back to text input automatically.
-
-MIC_AVAILABLE = False
-
+# ── Import speech recognition with error guidance ─────────────
 try:
     import speech_recognition as sr
-    # Test if any microphone exists
-    mics = sr.Microphone.list_microphone_names()
-    if mics:
-        # Try opening a microphone to confirm it works
-        try:
-            _test_r = sr.Recognizer()
-            with sr.Microphone() as _src:
-                _test_r.adjust_for_ambient_noise(_src, duration=0.3)
-            MIC_AVAILABLE = True
-        except (OSError, AttributeError, Exception):
-            MIC_AVAILABLE = False
-    else:
-        MIC_AVAILABLE = False
-except (ImportError, OSError, AttributeError, Exception):
-    MIC_AVAILABLE = False
+except ImportError:
+    print("❌ SpeechRecognition is not installed.")
+    print("   Run: python setup.py")
+    exit(1)
 
 
 # ── UI ────────────────────────────────────────────────────────
@@ -58,127 +43,206 @@ def clear_screen():
     speak(random_greeting)
 
 
-# ── Input Methods ─────────────────────────────────────────────
+# ── Microphone Setup ──────────────────────────────────────────
 
-def take_voice_command():
-    """Capture voice input via microphone."""
+def find_working_microphone():
+    """
+    Try to find a working microphone.
+    Tests the default mic first, then tries each available mic index.
+    Returns the mic index that works, or None.
+    """
     r = sr.Recognizer()
+
+    # 1) Try default microphone (no index)
     try:
         with sr.Microphone() as source:
+            r.adjust_for_ambient_noise(source, duration=0.5)
+        print_ai("🎙️  Default microphone detected and working.")
+        return None  # None means "use default"
+    except (OSError, AttributeError):
+        pass
+
+    # 2) Try each available microphone by index
+    try:
+        mic_names = sr.Microphone.list_microphone_names()
+    except (OSError, AttributeError):
+        mic_names = []
+
+    if not mic_names:
+        return -1  # No mic found at all
+
+    print_ai(f"Default mic failed. Scanning {len(mic_names)} audio devices...")
+
+    for i, name in enumerate(mic_names):
+        try:
+            with sr.Microphone(device_index=i) as source:
+                r.adjust_for_ambient_noise(source, duration=0.3)
+            print_ai(f"🎙️  Found working mic: [{i}] {name}")
+            return i
+        except (OSError, AttributeError, Exception):
+            continue
+
+    return -1  # Nothing worked
+
+
+def setup_microphone():
+    """
+    Initialize microphone with robust fallback.
+    Provides clear error messages and fixes for common issues.
+    """
+    mic_index = find_working_microphone()
+
+    if mic_index == -1:
+        print()
+        print_ai("=" * 50)
+        print_ai("⚠️  NO WORKING MICROPHONE DETECTED")
+        print_ai("=" * 50)
+        print_ai("Common fixes:")
+        print_ai("  1. Check if a microphone is plugged in")
+        print_ai("  2. Run 'python setup.py' to install audio drivers")
+        print_ai("  3. Windows → Settings → Privacy → Microphone → Allow")
+        print_ai("  4. Right-click speaker icon → Sound Settings → Input")
+        print_ai("     → Make sure a mic is selected as default")
+        print_ai("=" * 50)
+        print()
+        print_ai("Retrying in 5 seconds...")
+        time.sleep(5)
+
+        # Retry once
+        mic_index = find_working_microphone()
+        if mic_index == -1:
+            print_ai("❌ Still no microphone. Please fix and restart Friday.")
+            print_ai("   Run 'python setup.py' for diagnostics.")
+            exit(1)
+
+    return mic_index
+
+
+# ── Voice Input ───────────────────────────────────────────────
+
+def take_command(mic_index=None):
+    """
+    Capture voice command with robust error handling.
+    - Dynamic energy threshold for noisy environments
+    - Auto-retry on transient failures
+    - Timeout handling so it doesn't hang forever
+    """
+    r = sr.Recognizer()
+
+    # Dynamic settings for better recognition
+    r.pause_threshold = 1          # Seconds of silence to end a phrase
+    r.phrase_threshold = 0.3       # Min seconds of speech to register
+    r.non_speaking_duration = 0.5  # Seconds of non-speaking before phrase ends
+    r.dynamic_energy_threshold = True  # Auto-adjust for ambient noise
+
+    mic_args = {"device_index": mic_index} if mic_index is not None else {}
+
+    try:
+        with sr.Microphone(**mic_args) as source:
             print()
             print_ai(f"🎙️  Listening... ({data.user})")
-            r.pause_threshold = 1
-            r.adjust_for_ambient_noise(source, duration=0.5)
-            audio = r.listen(source, timeout=8, phrase_time_limit=15)
+
+            # Calibrate for ambient noise (important for noisy environments)
+            r.adjust_for_ambient_noise(source, duration=0.8)
+
             try:
+                # Listen with timeout so it doesn't hang forever
+                audio = r.listen(source, timeout=10, phrase_time_limit=20)
+            except sr.WaitTimeoutError:
+                print_ai("🔇 No speech detected. Try again...")
+                return None
+
+        # ── Recognize speech ──
+        try:
+            # Primary: Google (best accuracy, needs internet)
+            query = r.recognize_google(audio, language='en-in')
+            print(f"\n  🎤 {data.user}: {query}")
+            return query
+
+        except sr.UnknownValueError:
+            # Heard something but couldn't understand
+            random_confused = random.choice(data.confused)
+            print_ai(random_confused)
+            speak(random_confused)
+            return None
+
+        except sr.RequestError:
+            # Google API down or no internet — try offline recognition
+            print_ai("⚠️  Online speech service unavailable. Checking internet...")
+            try:
+                # Retry with Google once more (sometimes transient)
                 query = r.recognize_google(audio, language='en-in')
                 print(f"\n  🎤 {data.user}: {query}")
                 return query
-            except sr.UnknownValueError:
-                random_confused = random.choice(data.confused)
-                print_ai(random_confused)
-                speak(random_confused)
+            except Exception:
+                print_ai("❌ No internet connection. Speech recognition needs internet.")
+                print_ai("   Please check your connection and try again.")
+                speak("I need internet for speech recognition, Sir. Please check your connection.")
                 return None
-            except sr.RequestError:
-                print_ai("⚠️  Speech recognition service unavailable. Switching to text input.")
-                return "__SWITCH_TO_TEXT__"
-    except (OSError, AttributeError) as e:
-        print_ai(f"⚠️  Microphone error: {e}")
-        print_ai("Switching to text input mode.")
-        return "__SWITCH_TO_TEXT__"
 
+    except OSError as e:
+        # Microphone disconnected or access denied
+        error_msg = str(e).lower()
+        if "denied" in error_msg or "permission" in error_msg:
+            print_ai("❌ Microphone access denied!")
+            print_ai("   Go to: Windows Settings → Privacy → Microphone → Allow")
+        elif "device" in error_msg or "not found" in error_msg:
+            print_ai("❌ Microphone disconnected! Please reconnect and try again.")
+        else:
+            print_ai(f"❌ Microphone error: {e}")
+        speak("I'm having trouble with the microphone, Sir.")
+        time.sleep(2)
+        return None
 
-def take_text_command():
-    """Take typed text input as fallback."""
-    print()
-    try:
-        query = input(f"  ⌨️  {data.user}: ").strip()
-        if not query:
-            return None
-        return query
-    except (EOFError, KeyboardInterrupt):
-        return "exit"
+    except Exception as e:
+        print_ai(f"⚠️  Unexpected error: {e}")
+        time.sleep(1)
+        return None
 
 
 # ── Main Loop ─────────────────────────────────────────────────
 
 def main():
-    global MIC_AVAILABLE
     clear_screen()
+
+    # Setup microphone (with auto-detection and retry)
+    print_ai("Initializing microphone...")
+    mic_index = setup_microphone()
+
+    # Initialize AI command processor
     friday = Command()
 
-    # Show input mode
-    if MIC_AVAILABLE:
-        print_ai("All systems online. AI Brain initialized.")
-        print_ai("🎙️  Voice input detected — you can speak or type.")
-        print_ai(f"    (Type 'text mode' to switch, 'voice mode' to switch back)\n")
-    else:
-        print_ai("All systems online. AI Brain initialized.")
-        print_ai("⌨️  No microphone detected — using text input mode.")
-        print_ai(f"    (Type 'voice mode' to try enabling voice)\n")
+    print_ai("All systems online. AI Brain initialized.")
+    print_ai(f"🎙️  Speak your command, {data.user}...\n")
 
-    use_voice = MIC_AVAILABLE
-    voice_fail_count = 0  # Track consecutive voice failures
+    consecutive_failures = 0
 
     while True:
-        command = None
-
-        if use_voice:
-            command = take_voice_command()
-
-            # Handle voice failure — auto-switch after 3 consecutive failures
-            if command == "__SWITCH_TO_TEXT__":
-                use_voice = False
-                MIC_AVAILABLE = False
-                print_ai("⌨️  Switched to text input mode permanently.")
-                print_ai("    (Type 'voice mode' to try again)\n")
-                continue
-            
-            if command is None:
-                voice_fail_count += 1
-                if voice_fail_count >= 5:
-                    print_ai("⚠️  Too many voice failures. Switching to text input.")
-                    print_ai("    (Type 'voice mode' to switch back)\n")
-                    use_voice = False
-                continue
-            else:
-                voice_fail_count = 0  # Reset on success
-        else:
-            command = take_text_command()
+        command = take_command(mic_index)
 
         if command is None:
+            consecutive_failures += 1
+
+            # After 10 consecutive failures, re-scan microphones
+            if consecutive_failures >= 10:
+                print_ai("⚠️  Too many failed attempts. Re-scanning microphones...")
+                mic_index = find_working_microphone()
+                if mic_index == -1:
+                    print_ai("❌ No microphone available. Retrying in 10 seconds...")
+                    time.sleep(10)
+                    mic_index = find_working_microphone()
+                    if mic_index == -1:
+                        print_ai("❌ Microphone still unavailable. Please reconnect and restart.")
+                        exit(1)
+                else:
+                    print_ai("🎙️  Microphone re-connected!")
+                consecutive_failures = 0
             continue
 
-        # ── Mode switching commands ──
-        command_lower = command.lower().strip()
+        # Reset failure counter on successful input
+        consecutive_failures = 0
 
-        if command_lower in ("text mode", "type mode", "keyboard mode"):
-            use_voice = False
-            print_ai("⌨️  Switched to text input mode.")
-            print_ai("    (Type 'voice mode' to switch back)\n")
-            continue
-
-        if command_lower in ("voice mode", "mic mode", "speak mode"):
-            if MIC_AVAILABLE:
-                use_voice = True
-                voice_fail_count = 0
-                print_ai("🎙️  Switched to voice input mode.\n")
-            else:
-                # Re-test microphone
-                print_ai("Testing microphone...")
-                try:
-                    _r = sr.Recognizer()
-                    with sr.Microphone() as _s:
-                        _r.adjust_for_ambient_noise(_s, duration=0.3)
-                    MIC_AVAILABLE = True
-                    use_voice = True
-                    voice_fail_count = 0
-                    print_ai("🎙️  Microphone found! Switched to voice mode.\n")
-                except Exception:
-                    print_ai("❌ Microphone still not available. Staying in text mode.\n")
-            continue
-
-        # ── Process command through AI ──
+        # Process through AI brain
         friday.process(command)
 
 
