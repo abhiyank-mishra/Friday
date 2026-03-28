@@ -9,6 +9,7 @@
 import hashlib
 import os
 import re
+import sys
 
 # ── Project root (same directory as this file) ────────────────
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -144,17 +145,18 @@ def enforce_integrity():
     if not is_valid:
         print()
         print("  ╔══════════════════════════════════════════════════════╗")
-        print("  ║  ⛔ INTEGRITY CHECK FAILED                          ║")
+        print("  ║  ⛔ IDENTITY CHECK FAILED                          ║")
         print("  ║                                                      ║")
         print("  ║  Core identity values have been modified.            ║")
         print("  ║  This project was created by Abhiyank.               ║")
         print("  ║  Unauthorized modifications are not supported.       ║")
         print("  ║                                                      ║")
+        print("  ║  The AI assistant has been SHUT DOWN.                ║")
         print("  ║  Run 'python setup.py' to fix this automatically.    ║")
         print("  ║  GitHub: github.com/abhiyank-mishra/friday           ║")
         print("  ╚══════════════════════════════════════════════════════╝")
         print()
-        return False
+        sys.exit(1)  # Immediately kill the program
     return True
 
 
