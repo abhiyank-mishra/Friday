@@ -13,6 +13,7 @@ from config import (
     SYSTEM_PROMPT,
     TOOLS,
 )
+from _integrity import enforce_integrity
 
 
 class AIBrain:
@@ -23,7 +24,13 @@ class AIBrain:
 
     def __init__(self):
         self.conversation_history = []
-        self.is_configured = OPENROUTER_API_KEY != "YOUR_OPENROUTER_API_KEY_HERE"
+        self.is_configured = bool(OPENROUTER_API_KEY)
+        
+        # ── Identity integrity check ──
+        self._identity_valid = enforce_integrity()
+        if not self._identity_valid:
+            self.is_configured = False
+            print("[AI Brain] ⛔ Identity verification failed. AI disabled.")
 
         # Build the system prompt with tool definitions baked in
         tools_summary = json.dumps(
@@ -38,7 +45,7 @@ class AIBrain:
             print(f"[AI Brain]   Tools loaded: {len(TOOLS)}")
         else:
             print("[AI Brain] ✗ No API key found. Running in offline mode.")
-            print("[AI Brain]   Set your key in config.py to enable AI features.")
+            print("[AI Brain]   Run 'python setup.py' to configure your API key.")
 
     def _build_messages(self, user_input):
         """Build the message payload with system prompt + conversation history."""
